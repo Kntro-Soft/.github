@@ -1,30 +1,31 @@
 <div align="center">
 
-<!-- Banner: drop banner.png (1600x400) at profile/banner.png and uncomment the line below -->
-<!-- <img src="https://raw.githubusercontent.com/Kntro-Soft/.github/main/profile/banner.png" alt="ReqsAI" width="100%" /> -->
+<img src="https://raw.githubusercontent.com/Kntro-Soft/.github/main/profile/banner.png" alt="KntroSoft" width="100%" />
 
-# ReqsAI
+**A small software studio building ReqsAI — and what's next.**
 
-**AI-powered requirements elicitation, from meeting to backlog.**
-
-ReqsAI turns discovery conversations into structured user stories, Gherkin acceptance criteria,
-and backlog-ready outputs — in real time, as the meeting happens.
-
-[![Live App](https://img.shields.io/badge/live-app.tamci.app-ef4444?style=flat-square)](https://app.tamci.app)
-[![API](https://img.shields.io/badge/API-api.tamci.app-0f172a?style=flat-square)](https://api.tamci.app)
-[![License](https://img.shields.io/badge/status-active%20development-facc15?style=flat-square)]()
+[![Live App](https://img.shields.io/badge/ReqsAI-app.tamci.app-22c55e?style=flat-square&labelColor=0a0a0a)](https://app.tamci.app)
+[![API](https://img.shields.io/badge/API-api.tamci.app-16a34a?style=flat-square&labelColor=0a0a0a)](https://api.tamci.app)
+[![Status](https://img.shields.io/badge/status-active%20development-4ade80?style=flat-square&labelColor=0a0a0a)]()
 
 </div>
 
 ---
 
-## What is ReqsAI?
+## Who we are
 
-A B2B SaaS platform where an analyst runs a live discovery session (voice or text), and an LLM
-listens in real time — surfacing draft user stories, edge cases, clarifying questions, and
-duplicate/update detection against the existing backlog as the conversation unfolds. Decisions are
-reviewed and accepted on the spot; the backlog stays structured, deduplicated, and exportable
-(including a direct push to Jira).
+**KntroSoft** is the organization behind [**ReqsAI**](https://app.tamci.app), our flagship
+product — a B2B SaaS platform that turns live discovery meetings into structured, backlog-ready
+requirements using AI. This org hosts ReqsAI's full stack (backend, frontend, infrastructure,
+marketing site) plus the academic work behind it.
+
+## ReqsAI, in one paragraph
+
+An analyst runs a live discovery session (voice or text), and an LLM listens in real time —
+surfacing draft user stories, edge cases, clarifying questions, and duplicate/update detection
+against the existing backlog as the conversation unfolds. Decisions are reviewed and accepted on
+the spot; the backlog stays structured, deduplicated, and exportable (including a direct push to
+Jira), with subscription billing via Stripe.
 
 ## Repositories
 
@@ -60,6 +61,6 @@ the full convention.
 
 <div align="center">
 
-Built by the ReqsAI team · UPC Software Engineering · 2026
+KntroSoft · building ReqsAI · UPC Software Engineering · 2026
 
 </div>
