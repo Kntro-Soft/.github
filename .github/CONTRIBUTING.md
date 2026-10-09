@@ -42,11 +42,11 @@ The forms set the issue type (the board's **Type** field), a label and add the i
 
 | Branch | From | Merges into | Purpose |
 |--------|------|-------------|---------|
-| `main` | — | — | What runs in production. Every merge is a tagged release. |
+| `main` | — | — | What runs in production. Every merge deploys an approved candidate, then is tagged. |
 | `develop` | `main` | — | Integration branch (not the default branch: `main` is). |
 | `feature/<issue>-<slug>` | `develop` | `develop` | User story or task, e.g. `feature/123-export-to-jira`. |
 | `bugfix/<issue>-<slug>` | `develop` | `develop` | Bug found before a release, e.g. `bugfix/130-tenant-leak`. |
-| `release/X.Y.Z` | `develop` | `main`, then back into `develop` | Stabilization of version X.Y.Z; it is what gets deployed. |
+| `release/X.Y.Z` | `develop` | `main`, then back into `develop` | Stabilization of version X.Y.Z: candidates `X.Y.Z-rc.N` are built and tested here. |
 | `hotfix/X.Y.Z` | `main` | `main`, then back into `develop` | Urgent production fix (patch version). |
 
 No other prefixes (`feat/`, `fix/`, `ci/`, `docs/`...) are used for branches.
@@ -57,8 +57,8 @@ No other prefixes (`feat/`, `fix/`, `ci/`, `docs/`...) are used for branches.
   `<type>(<scope>): <description>`; reference the issue in the body (`Refs #123`).
 - Every pull request targets `develop`; only `release/X.Y.Z` and `hotfix/X.Y.Z` target `main`.
 - The description says `Closes #<issue>` so the merge closes the issue and links PR ↔ issue on the board.
-- Merge with a merge commit (the rulesets allow nothing else), so the commit that was deployed stays in the
-  history of `main`.
+- Merge with a merge commit (the rulesets allow nothing else). The merge commit of a release has the same git
+  tree as the tested candidate, which is how production finds it.
 
 ## Quality gates
 
@@ -71,49 +71,89 @@ No other prefixes (`feat/`, `fix/`, `ci/`, `docs/`...) are used for branches.
 - organization admins may bypass **only through a pull request** (needed while the team cannot always review
   its own changes).
 
-| Repository | Required checks | Extra rule on `main` |
-|------------|-----------------|----------------------|
-| reqsai-api | `Unit tests`, `Integration tests`, `Architecture & build`, `Analyze (Java)` | the PR head must be deployed to `produccion` |
-| reqsai-web | `lint-test-build`, `Analyze (JavaScript / TypeScript)` | the PR head must be deployed to `produccion` |
-| reqsai-report | `Lint Markdown files` | — |
-| reqsai-landing | none yet (`Lint & build` once its CI is merged) | — |
-| reqsai-infra | none yet (`Lint` once its CI is merged) | — |
+| Repository | Required checks | Recommended extra check on `main` |
+|------------|-----------------|-----------------------------------|
+| reqsai-api | `Unit tests`, `Integration tests`, `Architecture & build`, `Analyze (Java)` | `Release candidate ready` |
+| reqsai-web | `lint-test-build`, `Analyze (JavaScript / TypeScript)` | `Release candidate ready` |
+| reqsai-report | `Lint Markdown files` | `Release candidate ready` |
+| reqsai-landing | `Lint & build` (once its CI is merged) | `Release candidate ready` |
+| reqsai-infra | `Lint` (once its CI is merged) | `Release candidate ready` |
+
+CI runs on pull requests **and** on pushes to `main`, `develop`, `release/**` and `hotfix/**`: the release
+pull request and the back-merge are opened by a workflow (`GITHUB_TOKEN`), which starts no `pull_request` run,
+so their required checks come from the push of the same commit. `Release candidate ready` is the last job of
+`release.yml`; requiring it on `main` means a release pull request can only merge once its head commit is a
+verified (or staged) candidate. The old rule "the PR head must be deployed to `produccion`" no longer applies:
+production now runs **after** the merge.
 
 ## Traceability
 
 ```
 Issue #123 ─► feature/123-slug ─► commits "Refs #123" ─► PR "Closes #123" → develop
-          ─► release/X.Y.Z ─► build once (image ghcr.io/kntro-soft/<repo>:<sha> or Vercel build)
-          ─► deployment to "produccion" (approved) ─► PR release/X.Y.Z → main
-          ─► tag vX.Y.Z + GitHub Release on the deployed commit
+          ─► release/X.Y.Z ─► candidate vX.Y.Z-rc.N (pre-release: commit, tree hash, image digest / SHA-256)
+          ─► verification or staging ─► PR "release: X.Y.Z" → main
+          ─► produccion (approved, same bytes) ─► tag vX.Y.Z + GitHub Release ─► back-merge PR → develop
 ```
 
-Each hop is a GitHub link: the issue lists its PRs, the release notes list the PRs, the tag points to the
-deployed commit, the image label `org.opencontainers.image.revision` holds that commit, and the environment
-page lists each deployment with its commit and run.
+Each hop is a GitHub link: the issue lists its PRs, the release notes list the PRs, every candidate is a
+pre-release whose `candidate.json` records the commit, the git tree hash, the build number, the image digest
+or the SHA-256 of each file, and the stage it passed; the final release `vX.Y.Z` points to the `main` commit
+that reached production and carries the same `candidate.json`; the environment pages list each deployment.
 
 ## Releases and deployment
 
-| Repository | Release pipeline | Where it is approved | How it reaches production |
-|------------|------------------|----------------------|---------------------------|
-| reqsai-api, reqsai-web | `release.yml` / `hotfix.yml` → `delivery.yml`: CI → image built once (`linux/arm64`, tag = commit SHA, GHCR) → `deploy` → `release-pr` | job `deploy`, environment **`produccion`** of the app | `reqsai-infra` `deploy-mvp.yml` with `image_source=registry` deploys that same image to the EC2 host (GitHub OIDC → IAM role → SSH over SSM → Docker Compose) |
-| reqsai-landing | `release.yml` / `hotfix.yml` → `delivery.yml`: CI → `vercel build --prod` once → `deploy-preview` → `deploy-production` | environments **`preview`** and **`produccion`** | `vercel deploy --prebuilt --skip-domain`, then `vercel promote` of that same deployment |
-| reqsai-infra | `deploy-mvp.yml` on push to `main` (configuration), manual runs | job `approve`, environment **`produccion`** of reqsai-infra, unless the app already approved that SHA | Ansible over SSM (environment `mvp`, the only one the AWS role trusts) |
-| reqsai-report | none (the PDF/Word files are workflow artifacts) | — | — |
+The organization follows **Gitflow with release candidates, model C + tag at the end**: the artifact is built
+once on the release branch, tested there, and the very same bytes go to production after the merge into `main`.
+The version is tagged only when production succeeded.
 
-Order of a release (apps and landing):
+```mermaid
+flowchart TD
+    dev["develop"] -->|"cut release/X.Y.Z<br/>(hotfix/X.Y.Z from main)"| rel["push to release/X.Y.Z"]
+    rel --> ci["CI (same checks as a PR)"]
+    ci --> build["build ONCE → candidate vX.Y.Z-rc.N<br/>pre-release + candidate.json<br/>(GHCR digest / assets + SHA-256, tree hash)"]
+    build --> check{"staging target?"}
+    check -->|"reqsai-landing"| staging["staging · environment staging (approval)<br/>Vercel deployment without domains<br/>switch ENABLE_REQSAI_STAGING"]
+    check -->|"api, web, infra"| verify["automatic verification (no approval)<br/>same image/archive on the runner<br/>PostgreSQL, end-to-end smoke"]
+    check -->|"reqsai-report"| none["no deploy: documents only"]
+    staging --> pr["PR release: X.Y.Z → main<br/>(opened or updated by the workflow)"]
+    verify --> pr
+    none --> pr
+    pr -->|"bug found: fix on the release branch"| rel
+    pr -->|"merge"| main["push to main"]
+    main --> find["find the candidate whose tree hash<br/>equals main's tree (else fail)"]
+    find --> prod["produccion · environment produccion (approval)<br/>same digest / same Vercel deployment<br/>DB backup before the API deploy"]
+    prod -->|"all enabled jobs succeeded"| tag["tag vX.Y.Z + GitHub Release<br/>(same assets, CHANGELOG section)"]
+    tag --> back["PR chore: merge release X.Y.Z back into develop"]
+    prod -->|"failed"| rerun["no tag · re-run failed jobs<br/>(same candidate)"]
+```
 
-1. Cut `release/X.Y.Z` from `develop` (or `hotfix/X.Y.Z` from `main`) and open its PR to `main`.
-2. The pipeline builds the artifact **once** and waits for approval in the environment.
-3. After the production deployment succeeds, the pipeline comments on the release PR (deployed commit, artifact,
-   runs) and marks it ready. A release PR cannot merge before that: the `main` ruleset requires a successful
-   `produccion` deployment of its head commit (apps).
-4. Merge the PR. `tag-release.yml` checks the deployment again, creates `vX.Y.Z` and its GitHub Release **on the
-   deployed commit**, and links the back-merge `release/X.Y.Z → develop`.
+| Repository | Candidate (`release.yml` on `release/**`, `hotfix/**`) | Staging or verification | Production (`produccion.yml` on `main`) | Rollback (`rollback.yml`) |
+|------------|--------------------------------------------------------|-------------------------|------------------------------------------|---------------------------|
+| reqsai-api | `linux/arm64` image `ghcr.io/kntro-soft/reqsai-api:X.Y.Z-rc.N` (+ `sha-<commit>`), digest in the pre-release | **Verification** (no environment): the digest runs with the prod profile against PostgreSQL + pgvector, every Flyway migration, sign-up → e-mail → sign-in → organization | environment `produccion` (approval) → `reqsai-infra` ships that digest (DB backup first) → digest tagged `X.Y.Z` and `latest` | the digest of `vX.Y.Z` again, approval in `produccion` |
+| reqsai-web | `linux/arm64` image `ghcr.io/kntro-soft/reqsai-web:X.Y.Z-rc.N` | **Verification**: nginx image, shell, SPA fallback, bundles, translations | same as the API | same as the API |
+| reqsai-landing | `vercel build --prod` output (+ `version.json`) as a pre-release asset | **Staging**: environment `staging` (approval), the output deployed with `--prod --skip-domain` (optional alias) | environment `produccion`: `vercel promote` of that same deployment, `/version.json` checked | `vercel promote` of the release's deployment, or its stored output |
+| reqsai-infra | `git archive` of `ansible/` + `compose/` (the whole tree) as a pre-release asset | **Verification**: the archive's Compose stack with the production images (GHCR `latest`, or `develop` before the first release), routes through Caddy, backup and restore | `deploy-mvp.yml`: approval in `produccion`, Ansible over SSM in `mvp` (DB backup first) | `deploy-mvp.yml` with the tag's `ansible/` and `compose/` |
+| reqsai-report | PDF, Word and ZIP built once, as pre-release assets | none (no deploy) | the same files published as `vX.Y.Z` | — |
 
-Deploying before merging keeps `main` equal to what runs in production and makes the tag a fact, not a promise:
-if the deploy fails, nothing is merged or tagged and the branch gets a fix. Redeploys and rollbacks reuse a
-tagged artifact (`deploy.yml` on a tag in the apps) instead of rebuilding.
+Rules every pipeline enforces:
+
+1. The branch is `release/X.Y.Z` or `hotfix/X.Y.Z` and the version file (`build.gradle.kts`, `package.json` or
+   `VERSION`) already says `X.Y.Z`: the first commit of a release is `chore(release): X.Y.Z` (version bump +
+   `CHANGELOG.md` section). A published version is never reused; a fix to it is a new version.
+2. `N` of `rc.N` is one more than the highest existing `vX.Y.Z-rc.*`; re-running the workflow of a commit reuses
+   its candidate. Candidates are never edited away: a new push builds `rc.N+1`.
+3. Production refuses a `main` commit whose tree differs from every verified candidate ("main differs from the
+   tested candidate; push the change to the release branch to build a new rc").
+4. The final tag and release exist only if every enabled production job succeeded. Re-running the failed jobs
+   reuses the same candidate.
+5. The back-merge `main → develop` is a pull request (`chore: merge release X.Y.Z back into develop`).
+
+Pull requests opened by a workflow need *Allow GitHub Actions to create and approve pull requests* (organization
+and repository settings); while it is off, the run prints the compare link and the title to open them by hand.
+
+Database: Flyway migrations only move forward. The API deploy dumps PostgreSQL on the host right before it
+changes the stack (`reqsai-backup`, kept with the daily dumps); a rollback that crosses a migration restores that
+dump (`reqsai-restore`, section 14.4 of the reqsai-infra deploy guide).
 
 ## Environments and approvals
 
@@ -122,49 +162,54 @@ and admins cannot bypass it.
 
 | Repository | Environment | Allowed refs | Used by |
 |------------|-------------|--------------|---------|
-| reqsai-api, reqsai-web | `produccion` | `main`, `release/*`, `hotfix/*`, tags `v*` | `delivery.yml` job `deploy`, `deploy.yml` |
-| reqsai-landing | `preview` | `release/*`, `hotfix/*` | `delivery.yml` job `deploy-preview` |
-| reqsai-landing | `produccion` | `release/*`, `hotfix/*` | `delivery.yml` job `deploy-production` |
-| reqsai-infra | `produccion` | `main` | `deploy-mvp.yml` job `approve` |
-| reqsai-infra | `mvp` (unchanged) | `main` | `deploy-mvp.yml` job `deploy`; its name is part of the AWS role trust |
+| reqsai-api, reqsai-web | `produccion` | `main` | `produccion.yml` job `deploy`, `rollback.yml` |
+| reqsai-landing | `staging` | `release/*`, `hotfix/*` | `release.yml` job `staging` |
+| reqsai-landing | `produccion` | `main` | `produccion.yml` job `produccion`, `rollback.yml` |
+| reqsai-infra | `produccion` | `main` | `deploy-mvp.yml` job `approve` (called by `produccion.yml` and `rollback.yml`, or run by hand) |
+| reqsai-infra | `mvp` (unchanged, no reviewer) | `main` | `deploy-mvp.yml` job `deploy`; its name is part of the AWS role trust (`environment:mvp`) |
 
-DEV is each developer's machine and TEST is CI (Testcontainers, Vitest) on every PR. There is **no staging**:
-ReqsAI runs on a single EC2 host. Adding one costs about US$ 18.3/month for a second `t4g.small` 24×7 in
-us-east-1 (EC2 + 30 GB gp3 + public IPv4); see section 14.7 of the
-[reqsai-infra deploy guide](https://github.com/Kntro-Soft/reqsai-infra/blob/main/docs/deploy-ec2-docker-compose.md)
-for the options and AWS price sources. It would add a `staging` job before `deploy`, using the same image.
+A release of reqsai-api or reqsai-web is approved **once**, in the app's `produccion`; `reqsai-infra` sees that
+deployment `in_progress` for the same commit and does not ask again.
+
+DEV is each developer's machine and TEST is CI (Testcontainers, Vitest) on every PR. Staging exists only where it
+is free (the landing on Vercel). The API and web run on a single EC2 host: their candidates are verified on the
+runner instead. A real staging host costs about US$ 18.3/month (second `t4g.small` 24×7 in us-east-1); see
+section 14.7 of the
+[reqsai-infra deploy guide](https://github.com/Kntro-Soft/reqsai-infra/blob/main/docs/deploy-ec2-docker-compose.md).
 
 ## Deploy switches
 
 Every deploy channel has an on/off switch: an **organization variable** in *Kntro-Soft → Settings → Secrets and
 variables → Actions → Variables* (one control panel; organization variables reach public repositories on the
 Free plan). Only the exact value `true` turns a channel on; unset means off. A job that is switched off is
-skipped and the run summary says which variable stopped it.
+skipped and the run summary says which variable stopped it. Verification jobs are never switchable.
 
-| Variable | Repository · job | Controls |
-|----------|------------------|----------|
-| `ENABLE_REQSAI_API_IMAGE` | reqsai-api · `delivery.yml` `image` | Publishing the API image to GHCR (off also stops its deploy) |
-| `ENABLE_REQSAI_API_DEPLOY` | reqsai-api · `delivery.yml` `deploy`, `deploy.yml` | Deploying the API |
-| `ENABLE_REQSAI_WEB_IMAGE` | reqsai-web · `delivery.yml` `image` | Publishing the web image to GHCR |
-| `ENABLE_REQSAI_WEB_DEPLOY` | reqsai-web · `delivery.yml` `deploy`, `deploy.yml` | Deploying the web app |
+| Variable | Repository · workflow | Controls |
+|----------|-----------------------|----------|
+| `ENABLE_REQSAI_API_IMAGE` | reqsai-api · `release.yml` | Building the API candidate image (off: CI only, no candidate) |
+| `ENABLE_REQSAI_API_DEPLOY` | reqsai-api · `produccion.yml`, `rollback.yml` | Deploying the API (off: no deploy, no tag) |
+| `ENABLE_REQSAI_WEB_IMAGE` | reqsai-web · `release.yml` | Building the web candidate image |
+| `ENABLE_REQSAI_WEB_DEPLOY` | reqsai-web · `produccion.yml`, `rollback.yml` | Deploying the web app |
 | `ENABLE_REQSAI_INFRA_DEPLOY` | reqsai-infra · `deploy-mvp.yml` | Every deploy to the MVP host (the app deploy jobs fail if it is off) |
-| `ENABLE_REQSAI_LANDING_PREVIEW` | reqsai-landing · `delivery.yml` `build`, `deploy-preview` | The landing build and preview (production only promotes a preview) |
-| `ENABLE_REQSAI_LANDING_PRODUCCION` | reqsai-landing · `delivery.yml` `deploy-production` | Promoting the landing to production |
+| `ENABLE_REQSAI_LANDING_PREVIEW` | reqsai-landing · `release.yml` | Building the landing candidate with the Vercel CLI (needs `VERCEL_TOKEN`) |
+| `ENABLE_REQSAI_STAGING` | reqsai-landing · `release.yml` job `staging` | The staging deployment (off: an urgent hotfix goes straight to its PR; production still needs approval) |
+| `ENABLE_REQSAI_LANDING_PRODUCCION` | reqsai-landing · `produccion.yml`, `rollback.yml` | Production of the landing |
 
 ## Container registry
 
-The app images go to **GHCR** (`ghcr.io/kntro-soft/reqsai-api`, `ghcr.io/kntro-soft/reqsai-web`), tagged with the
-full commit SHA: free for these public repositories, pushed with the workflow's `GITHUB_TOKEN`, and pulled by
-`reqsai-infra` with its own `GITHUB_TOKEN`, so no AWS resource or credential changes. The EC2 host still
-receives an image archive over SSM and never talks to a registry. ECR (US$ 0.10 per GB-month, free transfer to
-EC2 in the same region) was not created: it needs a new repository, OIDC roles with push rights and pull rights
-for the host; the comparison is in section 14.7 of the reqsai-infra guide.
+The app images go to **GHCR** (`ghcr.io/kntro-soft/reqsai-api`, `ghcr.io/kntro-soft/reqsai-web`): candidates are
+tagged `X.Y.Z-rc.N` and `sha-<commit>`, and production adds `X.Y.Z` and `latest` **to the same digest**
+(`docker buildx imagetools create`, no rebuild). Pushed with the workflow's `GITHUB_TOKEN`, pulled by digest by
+`reqsai-infra` with its own `GITHUB_TOKEN`, so no AWS resource or credential changes. The EC2 host still receives
+an image archive over SSM and never talks to a registry. ECR was not created; the comparison is in section 14.7
+of the reqsai-infra guide.
 
 ## Reusable workflows
 
-`delivery.yml` is a reusable workflow **inside** each repository, called by `release.yml` and `hotfix.yml`. The
-API and web copies differ only in the app name; the landing one in its target (Vercel). Following the strategy,
-nothing is moved to a central repository yet. Extract a shared workflow (for example
-`Kntro-Soft/.github/.github/workflows/image-release.yml` with an `app` input) only when the pattern is proven:
-at least two releases of each app through these pipelines without changes to the copies, and the same need in a
-third repository. Until then, a change to one copy is applied to the other in the same pull request.
+Each repository keeps its own `release.yml`, `produccion.yml` and `rollback.yml`, and the same
+`.github/scripts/candidate.sh` (number, store, verify, find and publish candidates). The API and web workflows
+differ only in the app name and their verification script. Following the strategy, nothing is moved to a central
+repository yet. Extract a shared workflow (for example `Kntro-Soft/.github/.github/workflows/image-release.yml`
+with an `app` input) only when the pattern is proven: at least two releases of each app through these pipelines
+without changes to the copies. Until then, a change to `candidate.sh` is applied to every copy in the same
+round of pull requests.
